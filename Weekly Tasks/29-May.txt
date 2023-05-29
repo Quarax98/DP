@@ -1,0 +1,6 @@
+find docker hosted db containing the data warehouse
+find the fucntion that updates the data warehouse - linked to celery - how does it link to analytics
+
+side: zoom for celery
+
+end:update to 90 every 1min
