@@ -13,8 +13,6 @@ import datasourceactive from '../../assets/images/sidebar/datasource-active.svg'
 import alerts from '../../assets/images/sidebar/alerts.svg';
 import alertsactive from '../../assets/images/sidebar/alerts-active.svg';
 import slacklink from '../../assets/images/sidebar/support_slack.svg';
-import test from '../../assets/images/sidebar/test.svg';
-import testactive from '../../assets/images/sidebar/test-active.svg';
 import './sidebar.scss';
 
 const Sidebar = () => {
@@ -65,15 +63,6 @@ const Sidebar = () => {
               <span>KPI Explorer</span>
             </Link>
           </li>
-          <li className={location[1] === 'test' ? 'active' : ''}>
-            <Link to="/test">
-              <img
-                src={location[1] === 'test' ? testactive : test}
-                alt="School"
-              />
-              <span>test</span>
-            </Link>
-          </li>
         </ul>
         <ul>
           <li className={location[1] === 'datasource' ? 'active' : ''}>
@@ -100,8 +89,22 @@ const Sidebar = () => {
               <span>Alerts</span>
             </Link>
           </li>
+          <li className="slack-link">
+            <a
+              href="https://join.slack.com/t/chaosgenius/shared_invite/zt-140042uac-rrm~xbx9o_aydi6PTmp_Mg"
+              target="_blank"
+              rel="noopener noreferrer">
+              <img src={slacklink} alt="Slack" />
+              <span>Troubleshoot</span>
+            </a>
+          </li>
         </ul>
       </div>
+      <ul>
+        <li className="common-watermark">
+          <span>Version {versionSettingData && versionSettingData.main}</span>
+        </li>
+      </ul>
     </div>
   );
 };

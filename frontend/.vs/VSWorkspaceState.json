@@ -1,0 +1,16 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\src",
+    "\\src\\components",
+    "\\src\\components\\DashboardForm",
+    "\\src\\components\\DataSourceForm",
+    "\\src\\containers",
+    "\\src\\containers\\AddDataSource",
+    "\\src\\containers\\Dashboard",
+    "\\src\\containers\\DataSource",
+    "\\src\\redux"
+  ],
+  "SelectedNode": "\\src\\components\\DataSourceForm\\index.jsx",
+  "PreviewInSolutionExplorer": false
+}

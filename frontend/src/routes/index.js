@@ -26,6 +26,7 @@ import AddDashboard from '../containers/AddDashboard';
 import OrganisationOnboarding from '../containers/Onboarding/OrganisationOnboarding';
 import OrganisationSettings from '../containers/OrganisationSettings/OrganisationSettings';
 import TaskManager from '../containers/TaskManagement/TaskManager';
+import Reports from '../containers/Reports';
 
 const Routes = () => (
   <Switch>
@@ -35,6 +36,11 @@ const Routes = () => (
       exact
       path="/organisation-onboarding"
       component={OrganisationOnboarding}></Route>
+    <PrivateRouteWithSidebar
+        exact
+        path="/reports/:id"
+        component={(props) => <Reports {...props} />}
+    />
     <PrivateRouteWithSidebar
       exact
       path={[

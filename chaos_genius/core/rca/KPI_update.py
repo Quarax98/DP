@@ -1,0 +1,350 @@
+"""Provides a controller class for performing RCA."""
+
+import json
+import logging
+from datetime import date, datetime
+from typing import Optional, Tuple
+
+import numpy as np
+import pandas as pd
+from numpyencoder import NumpyEncoder
+
+from chaos_genius.controllers.task_monitor import checkpoint_failure, checkpoint_success
+from chaos_genius.core.rca.constants import (
+    LINE_DATA_TIMESTAMP_FORMAT,
+    TIME_RANGES_BY_KEY,
+)
+from chaos_genius.core.rca.root_cause_analysis import RootCauseAnalysis
+from chaos_genius.core.utils.data_loader import DataLoader
+from chaos_genius.core.utils.end_date import load_input_data_end_date
+from chaos_genius.core.utils.round import round_series
+from chaos_genius.databases.models.data_source_model import DataSource
+from chaos_genius.databases.models.rca_data_model import RcaData, db
+from chaos_genius.settings import (
+    DEEPDRILLS_ENABLED,
+    DEEPDRILLS_HTABLE_MAX_CHILDREN,
+    DEEPDRILLS_HTABLE_MAX_DEPTH,
+    DEEPDRILLS_HTABLE_MAX_PARENTS,
+    SUMMARY_DEEPDRILLS_ENABLED_TIME_RANGES,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class RootCauseAnalysisController:
+    """RCA Controller class. Used to perform RCA analysis with Celery."""
+
+    def __init__(
+        self,
+        kpi_info: dict,
+        end_date: date = None,
+        task_id: Optional[int] = None,
+    ):
+        """Initialize the controller.
+
+        :param kpi_info: KPI information as a dictionary
+        :type kpi_info: dict
+        :param end_date: end date for analysis, defaults to None
+        :type end_date: date, optional
+        :param task_id: used to log checkpoints for task. Set to None to
+            disable checkpoints.
+        :type task_id: int, optional
+        """
+        logger.info(f"RCA Controller initialized with KPI: {kpi_info['id']}")
+        self.kpi_info = kpi_info
+
+        # TODO: Make this connection type agnostic.
+        conn_type = DataSource.get_by_id(kpi_info["data_source"]).as_dict[
+            "connection_type"
+        ]
+        self._preaggregated = conn_type == "Druid"
+        self._preaggregated_count_col = self.kpi_info["count_column"]
+
+        self.end_date = load_input_data_end_date(kpi_info, end_date)
+        logger.info(f"RCA Controller end date: {self.end_date}")
+
+        self.metric = kpi_info["metric"]
+        self.dimensions = kpi_info["dimensions"]
+        self.dt_col = kpi_info["datetime_column"]
+        self.agg = kpi_info["aggregation"]
+
+        self.num_dim_combs = list(
+            range(1, min(4, len(kpi_info["dimensions"]) + 1))
+        )
+
+        self._task_id = task_id
+
+        # TODO: Figure out a better way of handling this.
+        # Also fix in RootCauseAnalysisController._load_data,
+        # DataLoader._preprocess_df, AnomalyDetectionController.__init__ and
+        # AnomalyDetectionController._load_data.
+        if self._preaggregated and self.metric == self._preaggregated_count_col:
+            logger.info(
+                "Preaggregated count column same as metric column. "
+                "`self._preaggregated_count_column` will be updated after data loading."
+            )
+
+    def _get_line_data(self, days: int = 60) -> dict:
+        """Get line data for KPI.
+
+        :param days: number of days to get data for, defaults to 60
+        :type days: int, optional
+        :return: dictionary with line data
+        :rtype: dict
+        """
+        rca_df = DataLoader(
+            self.kpi_info,
+            end_date=self.end_date,
+            days_before=days,
+        ).get_data()
+
+        if self._preaggregated:
+            if self.agg == "count":
+                agg_dict = {self._preaggregated_count_col: "sum"}
+                col_name = self._preaggregated_count_col
+            elif self.agg == "sum":
+                agg_dict = {self.metric: "sum"}
+                col_name = self.metric
+            else:
+                raise ValueError(
+                    f"Unsupported aggregation: {self.agg} for preaggregated data."
+                )
+        else:
+            agg_dict = {self.metric: self.agg}
+            col_name = self.metric
+
+        rca_df = (
+            rca_df.resample("D", on=self.dt_col)
+            .agg(agg_dict)
+            .fillna(0)
+            .reset_index()
+        )
+
+        rca_df[self.dt_col] = rca_df[self.dt_col].dt.strftime(
+            LINE_DATA_TIMESTAMP_FORMAT
+        )
+
+        rca_df = rca_df.rename(
+            columns={self.dt_col: "date", col_name: "value"}
+        )
+        rca_df["value"] = round_series(rca_df["value"])
+
+        logger.debug(f"Line data has {len(rca_df)} rows.")
+
+        return rca_df.to_dict(orient="records")
+
+    def _load_rca_obj(self, timeline: str) -> RootCauseAnalysis:
+        """Create RootCauseAnalysis object for KPI.
+
+        :param timeline: timeline to use
+        :type timeline: str
+        :return: RootCauseAnalysis object
+        :rtype: RootCauseAnalysis
+        """
+        base_df, rca_df = self._load_data(timeline)
+        return RootCauseAnalysis(
+            base_df,
+            rca_df,
+            dims=self.dimensions,
+            metric=self.metric,
+            agg=self.agg,
+            num_dim_combs=self.num_dim_combs,
+            preaggregated=self._preaggregated,
+            preaggregated_count_col=self._preaggregated_count_col,
+        )
+
+    def _get_aggregation(self, rca: RootCauseAnalysis) -> dict:
+        """Get aggregations for KPI.
+
+        :param rca: RootCauseAnalysis object to use
+        :type rca: RootCauseAnalysis
+        :return: dictionary with aggregations for KPI
+        :rtype: dict
+        """
+        return rca.get_panel_metrics()
+
+    def _process_rca_output(self, impact_table: dict) -> dict:
+        """Process output of RCA for UI friendly output.
+
+        :param impact_table: RCA data
+        :type impact_table: dict
+        :return: UI friendly dictionary
+        :rtype: dict
+        """
+        rename_dict = {
+            "subgroup": "subgroup",
+            "size_g1": "g1_size",
+            "val_g1": "g1_agg",
+            "count_g1": "g1_count",
+            "size_g2": "g2_size",
+            "val_g2": "g2_agg",
+            "count_g2": "g2_count",
+            "impact": "impact",
+            "id": "id",
+            "parentId": "parentId",
+        }
+        df = pd.DataFrame(impact_table).rename(columns=rename_dict)
+        df = df.drop(set(df.columns) - set(rename_dict.values()), axis=1)
+        df = df.fillna(np.nan).replace([np.nan], [None])
+        return df.to_dict(orient="records")
+
+    def _checkpoint_success(self, checkpoint: str):
+        if self._task_id is not None:
+            checkpoint_success(
+                self._task_id,
+                self.kpi_info["id"],
+                "DeepDrills",
+                checkpoint,
+            )
+        logger.info(
+            "(Task: %s, KPI: %d)" " DeepDrills - %s - Success",
+            str(self._task_id),
+            self.kpi_info["id"],
+            checkpoint,
+        )
+
+    def _checkpoint_failure(self, checkpoint: str, e: Exception):
+        if self._task_id is not None:
+            checkpoint_failure(
+                self._task_id,
+                self.kpi_info["id"],
+                "DeepDrills",
+                checkpoint,
+                e,
+            )
+        logger.exception(
+            "(Task: %s, KPI: %d) " "DeepDrills - %s - Exception occured.",
+            str(self._task_id),
+            self.kpi_info["id"],
+            checkpoint,
+            exc_info=e,
+        )
+
+    def compute(self):
+        """Compute RCA for KPI and store results."""
+        kpi_id = self.kpi_info["id"]
+        output = []
+
+        logger.info("Getting Line Data for KPI.")
+        try:
+            line_data = self._get_line_data()
+            output.append(self._output_to_row("line", line_data))
+            self._checkpoint_success("Time Series Generation")
+        except Exception as e:
+            self._checkpoint_failure("Time Series Generation", e)
+            raise e
+        logger.info("Line Data for KPI completed.")
+
+        for timeline in SUMMARY_DEEPDRILLS_ENABLED_TIME_RANGES:
+            logger.info(f"Running RCA for timeline: {timeline}.")
+            try:
+                rca = self._load_rca_obj(timeline)
+                self._checkpoint_success(f"{timeline} Data Loader")
+            except Exception as e:
+                rca = None
+                logger.error(
+                    f"Error loading RCA for timeline [{timeline}]: {e}"
+                )
+                self._checkpoint_failure(f"{timeline} Data Loader", e)
+
+            if rca is None:
+                continue
+
+            logger.info("RCA object created.")
+
+            try:
+                logger.info("Computing aggregations.")
+                agg_data = self._get_aggregation(rca)
+                output.append(self._output_to_row("agg", agg_data, timeline))
+                self._checkpoint_success(f"{timeline} Card Metrics")
+
+            except Exception as e:
+                logger.error(
+                    f"Error in agg for {timeline}. Skipping timeline.",
+                    exc_info=1,
+                )
+                self._checkpoint_failure(f"{timeline} Card Metrics", e)
+                continue
+
+            # Do not calculate DeepDrills if DEEPDRILLS_ENABLED is false.
+            if not DEEPDRILLS_ENABLED:
+                logger.info(
+                    "DEEPDRILLS_ENABLED is False. Skipping DeepDrills."
+                )
+                self._checkpoint_success(f"{timeline} DeepDrills Calculation")
+                continue
+
+            # Do not calculate further if no dimensions are present
+            if not self.kpi_info.get("dimensions"):
+                logger.info(
+                    f"No dimensions in KPI ID: {kpi_id}. Skipping DeepDrills."
+                )
+                self._checkpoint_success(f"{timeline} DeepDrills Calculation")
+                continue
+
+            try:
+                if self._preaggregated:
+                    dims = self.kpi_info["dimensions"]
+                else:
+                    dims = [None] + self.dimensions
+                for dim in dims:
+                    logger.info(f"Computing RCA for dimension: {dim}")
+                    try:
+                        rca_data = self._get_rca(rca, dim, timeline)
+                        output.append(
+                            self._output_to_row("rca", rca_data, timeline, dim)
+                        )
+                    except Exception as e:  # noqa E722
+                        logger.error(
+                            f"Error in RCA for {timeline, dim}", exc_info=1
+                        )
+                        raise e
+
+                    if dim is not None:
+                        logger.info(
+                            f"Computing Hierarchical table for dimension: {dim}"
+                        )
+                        try:
+                            htable_data = self._get_htable(rca, dim, timeline)
+                            output.append(
+                                self._output_to_row(
+                                    "htable", htable_data, timeline, dim
+                                )
+                            )
+                        except Exception as e:  # noqa E722
+                            logger.error(
+                                f"Error in htable for {timeline, dim}",
+                                exc_info=1,
+                            )
+                            raise e
+
+                self._checkpoint_success(f"{timeline} DeepDrills Calculation")
+            except Exception as e:
+                logger.error(
+                    f"Error in DeepDrills Calculation for {timeline}",
+                    exc_info=1,
+                )
+                self._checkpoint_failure(
+                    f"{timeline} DeepDrills Calculation", e
+                )
+
+        # don't store if there is only the line data
+        if len(output) < 2:
+            return None
+
+        try:
+            logger.info(f"Storing output for KPI {kpi_id}")
+            output = pd.DataFrame(output)
+            output["created_at"] = datetime.now()
+            output.to_sql(
+                RcaData.__tablename__,
+                db.engine,
+                if_exists="append",
+                index=False,
+                chunksize=RcaData.__chunksize__,
+            )
+            self._checkpoint_success("Output Storage")
+        except Exception as e:  # noqa E722
+            logger.error("Error in storing output.", exc_info=e)
+            self._checkpoint_failure("Output Storage", e)
+            raise e

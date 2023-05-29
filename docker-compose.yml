@@ -70,7 +70,7 @@ services:
 
   chaosgenius-webapp:
     container_name: chaosgenius-webapp
-    image: chaosgenius/chaosgenius-webapp:0.11.0
+    image: chaosgenius-webapp:sit
     command: >
       sh -c "npx react-inject-env set -d ./ &&
              nginx -g 'daemon off;'"

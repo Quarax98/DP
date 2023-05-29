@@ -1,0 +1,16 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\chaos_genius",
+    "\\chaos_genius\\databases",
+    "\\chaos_genius\\databases\\models",
+    "\\chaos_genius\\jobs",
+    "\\scripts",
+    "\\scripts\\extra",
+    "\\scripts\\extra\\supervisor",
+    "\\scripts\\extra\\supervisor\\conf.d",
+    "\\tests"
+  ],
+  "SelectedNode": "\\chaos_genius\\jobs\\analytics_scheduler.py",
+  "PreviewInSolutionExplorer": false
+}

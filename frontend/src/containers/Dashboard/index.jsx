@@ -50,6 +50,7 @@ const Dashboard = () => {
   const [tab, setTabs] = useState('deepdrills');
   const [breadCrumbs, setBreadCrumbs] = useState('');
 
+
   useEffect(() => {
     getAllDashboardSidebar();
     store.dispatch(SETTING_RESET);
@@ -214,12 +215,16 @@ const Dashboard = () => {
                   kpi &&
                   active &&
                   anomalySettingData && (
-                    <Dashboardgraph
-                      kpi={kpi}
-                      kpiName={active}
-                      anomalystatus={anomalySettingData}
-                    />
-                  )}
+                                    <>
+                                        <Dashboardgraph
+                                        Bar options={options}
+                                        kpi={kpi}
+                                        kpiName={active}
+                                        anomalystatus={anomalySettingData} />
+                                        <button className="update-button">Update RCA</button>
+                                    </>)
+                   
+                 }
                 {tab === 'anomaly' &&
                   kpi &&
                   anomalySettingData &&
@@ -236,13 +241,37 @@ const Dashboard = () => {
                     <Analystics />
                   </div>
                 )}
-              </div>
+             </div>
             </div>
           </>
         )}{' '}
       </>
     );
   }
+};
+
+const options = {
+    responsive: true,
+    plugins: {
+        title: {
+            display: true,
+        },
+        zoom: {
+            pan: {
+                enabled: true,
+                mode: 'y'
+            },
+            zoom: {
+                pinch: {
+                    enabled: true       // Enable pinch zooming
+                },
+                wheel: {
+                    enabled: true       // Enable wheel zooming
+                },
+                mode: 'y',
+            }
+        }
+    },
 };
 
 export default Dashboard;
