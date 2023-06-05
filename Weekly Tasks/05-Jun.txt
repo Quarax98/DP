@@ -1,0 +1,3 @@
+debug docker -schleduler restarting
+change data 90 days
+frontend scrollbar line chart -highcharts
